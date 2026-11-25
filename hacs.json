@@ -1,0 +1,6 @@
+{
+  "name": "Statistik-Grafik mit Grenzlinie",
+  "filename": "statistik-grenzlinie-card.js",
+  "render_readme": true,
+  "homeassistant": "2025.2.0"
+}
