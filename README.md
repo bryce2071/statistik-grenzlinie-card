@@ -46,6 +46,13 @@ Alle Optionen der Statistik-Grafik gelten unverändert (`entities`, `period`, `d
 
 Bei gestapelten Säulen zählt die Summe des Stapels.
 
+## Bearbeiten-Dialog
+
+Oben steht der Editor der Statistik-Grafik von Home Assistant (Entitäten, Zeitraum, Darstellung, Achse …),
+darunter die Einstellungen der Grenzlinie: Wert (leer = Obergrenze der Y-Achse), Farbe, Beschriftung an
+oder aus und ein eigener Text. Enthält die Konfiguration etwas, das der eingebaute Editor nicht kennt,
+blendet die Karte ihn aus und verweist auf den Code-Editor.
+
 ## Hinweise
 
 - Die Linie wird in die Grafik von Home Assistant eingesetzt (ECharts, ab Home Assistant 2025.2). Ändert
@@ -53,7 +60,6 @@ Bei gestapelten Säulen zählt die Summe des Stapels.
   Browser-Konsole).
 - Wer die Datei vorher von Hand eingebunden hatte (`/local/statistik-grenzlinie-card.js`), entfernt diese
   Ressource (**Einstellungen → Dashboards → ⋮ → Ressourcen**), sonst lädt der Browser die ältere Fassung.
-- Einstellungen nur im Code-Editor (YAML).
 
 ## Lizenz
 

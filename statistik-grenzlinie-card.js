@@ -1,5 +1,5 @@
 /*
- * Statistik-Grenzlinie-Karte für Home Assistant  –  v1.0.0
+ * Statistik-Grenzlinie-Karte für Home Assistant  –  v1.1.0
  * Zeigt die normale Statistik-Grafik von Home Assistant (statistics-graph) und zieht eine rote
  * Linie bei der eingestellten kWh-Anzeige (max_y_axis) – aber nur, wenn im gezeigten Zeitraum
  * ein Wert darüber liegt. Bleibt alles darunter, sieht die Grafik aus wie bisher.
@@ -15,11 +15,15 @@
  * Die Linie wird in die Grafik von Home Assistant eingesetzt. Ändert ein Update deren Aufbau,
  * fehlt nur die Linie – die Grafik selbst bleibt (Hinweis in der Browser-Konsole).
  *
+ * Bearbeiten-Dialog (seit 1.1.0): oben der Editor der Statistik-Grafik von Home Assistant,
+ * darunter die Einstellungen der Grenzlinie.
+ *
  * Quelle: https://github.com/bryce2071/statistik-grenzlinie-card (MIT-Lizenz)
  */
 (() => {
   const TAG = "statistik-grenzlinie-card";
-  const VERSION = "1.0.0";
+  const EDITOR_TAG = `${TAG}-editor`;
+  const VERSION = "1.1.0";
   if (customElements.get(TAG)) return;
 
   const LINE_ID = "statistik-grenzlinie";
@@ -250,10 +254,22 @@
         : { columns: 12, min_columns: 6, min_rows: 3 };
     }
 
-    static getStubConfig() {
+    static getConfigElement() {
+      return document.createElement(EDITOR_TAG);
+    }
+
+    static getStubConfig(hass) {
+      const states = (hass && hass.states) || {};
+      const id = Object.keys(states).find(
+        (e) =>
+          e.startsWith("sensor.") &&
+          states[e].attributes &&
+          states[e].attributes.state_class === "total_increasing" &&
+          states[e].attributes.unit_of_measurement === "kWh",
+      );
       return {
-        entities: [],
-        chart_type: "bar-stack",
+        entities: id ? [id] : [],
+        chart_type: "bar",
         period: "day",
         days_to_show: 14,
         stat_types: ["change"],
@@ -402,6 +418,249 @@
     }
   }
 
+  // ---------- Bearbeiten-Dialog ----------
+  // Oben der Editor der Statistik-Grafik von Home Assistant (bekommt die Einstellungen ohne die eigenen
+  // Felder), darunter ein Formular für die Grenzlinie.
+
+  const EIGENE = ["grenze", "grenze_farbe", "grenze_text"];
+  const ROT = "#db4437";
+
+  const mitFrist = (versprechen, ms) =>
+    Promise.race([versprechen, new Promise((_, nein) => setTimeout(() => nein(new Error("Zeit abgelaufen")), ms))]);
+
+  let statistikVersprechen = null;
+  const statistikKlasse = () => {
+    if (!statistikVersprechen) {
+      statistikVersprechen = (async () => {
+        if (!customElements.get("hui-statistics-graph-card") && window.loadCardHelpers) {
+          const helpers = await window.loadCardHelpers();
+          helpers.createCardElement({ type: "statistics-graph", entities: [] });
+        }
+        await customElements.whenDefined("hui-statistics-graph-card");
+        return customElements.get("hui-statistics-graph-card");
+      })();
+    }
+    return statistikVersprechen;
+  };
+
+  const hexZuRgb = (s) => {
+    const m = /^#?([0-9a-f]{6}|[0-9a-f]{3})$/i.exec(String(s || "").trim());
+    if (!m) return undefined;
+    const h = m[1].length === 3 ? m[1].split("").map((c) => c + c).join("") : m[1];
+    return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+  };
+  const rgbZuHex = (rgb) =>
+    Array.isArray(rgb) && rgb.length === 3
+      ? "#" + rgb.map((n) => Math.max(0, Math.min(255, Math.round(Number(n) || 0))).toString(16).padStart(2, "0")).join("")
+      : undefined;
+
+  const ED_STYLE = `
+    :host { display: block; }
+    [hidden] { display: none !important; }
+    h3 { margin: 20px 0 4px; font-size: 1em; font-weight: 500; color: var(--primary-color); }
+    .hinweis { font-size: .85em; color: var(--secondary-text-color); margin: 0 2px 8px; line-height: 1.4; }
+    .fehlt { font-size: .9em; color: var(--secondary-text-color); padding: 8px 2px; }
+  `;
+  const ED_LABEL = {
+    grenze: "Linie bei (optional)",
+    grenze_farbe: "Farbe der Linie",
+    beschriftung: "Beschriftung an der Linie",
+    grenze_text: "Eigener Text (optional)",
+  };
+  const ED_HILFE = {
+    grenze: "Leer = bei der eingestellten Obergrenze der Y-Achse.",
+    grenze_text: "Leer = der Wert der Grenze, z. B. „3 kWh“.",
+  };
+  const ED_SCHEMA = [
+    { name: "grenze", selector: { number: { mode: "box", step: "any" } } },
+    {
+      name: "",
+      type: "grid",
+      schema: [
+        { name: "grenze_farbe", selector: { color_rgb: {} } },
+        { name: "beschriftung", selector: { boolean: {} } },
+      ],
+    },
+    { name: "grenze_text", selector: { text: {} } },
+  ];
+
+  class StatistikGrenzlinieCardEditor extends HTMLElement {
+    constructor() {
+      super();
+      this.attachShadow({ mode: "open" });
+      this._cfg = {};
+    }
+
+    set hass(hass) {
+      this._hass = hass;
+      if (this._innen) this._innen.hass = hass;
+      if (this._form) this._form.hass = hass;
+    }
+
+    set lovelace(l) {
+      this._lovelace = l;
+      if (this._innen) this._innen.lovelace = l;
+    }
+
+    setConfig(config) {
+      this._cfg = { ...(config || {}) };
+      this._zeichnen();
+    }
+
+    connectedCallback() {
+      if (this._gestartet) return;
+      this._gestartet = true;
+      this._aufbauen();
+    }
+
+    // Einstellungen für die eingebaute Statistik-Grafik: alles außer den eigenen Feldern
+    _innenConfig() {
+      const rest = {};
+      Object.keys(this._cfg).forEach((k) => {
+        if (k !== "type" && !EIGENE.includes(k)) rest[k] = this._cfg[k];
+      });
+      const c = { type: "statistics-graph", ...rest };
+      if (!Array.isArray(c.entities)) c.entities = [];
+      return c;
+    }
+
+    async _aufbauen() {
+      const root = this.shadowRoot;
+      root.innerHTML = `<style>${ED_STYLE}</style>
+        <div class="innen"></div>
+        <h3>Grenzlinie</h3>
+        <div class="hinweis">Die Linie erscheint nur, wenn im gezeigten Zeitraum ein Wert darüber liegt. Damit höhere Säulen nicht
+        abgeschnitten werden, oben die Y-Achse an die Daten anpassen lassen (fit_y_data).</div>
+        <div class="eigene"></div>`;
+      let Klasse = null;
+      try {
+        Klasse = await mitFrist(statistikKlasse(), 15000);
+      } catch (e) {
+        Klasse = null;
+      }
+      const innen = root.querySelector(".innen");
+      if (Klasse && typeof Klasse.getConfigElement === "function") {
+        try {
+          const ed = await Klasse.getConfigElement();
+          ed.hass = this._hass;
+          if (this._lovelace) ed.lovelace = this._lovelace;
+          ed.addEventListener("config-changed", (ev) => {
+            ev.stopPropagation();
+            this._innenGeaendert((ev.detail && ev.detail.config) || {});
+          });
+          ed.addEventListener("GUImode-changed", (ev) => ev.stopPropagation());
+          innen.appendChild(ed);
+          this._innen = ed;
+        } catch (e) {
+          this._innen = null;
+        }
+      }
+      if (!this._innen) {
+        innen.innerHTML = `<div class="fehlt">Der Editor der Statistik-Grafik ließ sich nicht laden – Entitäten, Zeitraum und Achse bitte im Code-Editor einstellen.</div>`;
+      }
+      try {
+        await mitFrist(customElements.whenDefined("ha-form"), 15000);
+        const f = document.createElement("ha-form");
+        f.computeLabel = (s) => ED_LABEL[s.name] || s.name;
+        f.computeHelper = (s) => ED_HILFE[s.name] || "";
+        f.hass = this._hass;
+        f.schema = ED_SCHEMA;
+        f.addEventListener("value-changed", (ev) => {
+          ev.stopPropagation();
+          this._eigeneGeaendert({ ...((ev.detail && ev.detail.value) || {}) });
+        });
+        root.querySelector(".eigene").appendChild(f);
+        this._form = f;
+      } catch (e) {
+        this._form = null;
+      }
+      this._innenJson = null;
+      this._zeichnen();
+    }
+
+    _zeichnen() {
+      if (this._innen) {
+        const ic = this._innenConfig();
+        const j = JSON.stringify(ic);
+        if (j !== this._innenJson) {
+          this._innenJson = j;
+          let fehler = "";
+          try {
+            this._innen.setConfig(ic);
+          } catch (e) {
+            fehler = (e && e.message) || String(e);
+          }
+          // Kann der eingebaute Editor die Einstellungen nicht darstellen, ihn ausblenden statt mit altem Stand weiterzuarbeiten
+          this._innen.hidden = !!fehler;
+          const box = this.shadowRoot.querySelector(".innen");
+          let hinweis = box && box.querySelector(".fehlt");
+          if (fehler && box && !hinweis) {
+            hinweis = document.createElement("div");
+            hinweis.className = "fehlt";
+            box.appendChild(hinweis);
+          }
+          if (hinweis) {
+            hinweis.hidden = !fehler;
+            hinweis.textContent = fehler
+              ? `Diese Einstellungen kann der Editor der Statistik-Grafik nicht darstellen (${fehler}) – bitte im Code-Editor bearbeiten.`
+              : "";
+          }
+        }
+      }
+      if (this._form) {
+        const c = this._cfg;
+        const d = {
+          grenze_farbe: hexZuRgb(c.grenze_farbe || ROT),
+          beschriftung: c.grenze_text !== false,
+          grenze_text: typeof c.grenze_text === "string" ? c.grenze_text : "",
+        };
+        if (c.grenze !== undefined && c.grenze !== null && c.grenze !== "") d.grenze = Number(c.grenze);
+        if (JSON.stringify(this._form.data) !== JSON.stringify(d)) this._form.data = d;
+      }
+    }
+
+    _innenGeaendert(neu) {
+      this._innenJson = JSON.stringify(neu);
+      const aus = { type: this._cfg.type };
+      Object.keys(neu).forEach((k) => {
+        if (k !== "type" && !EIGENE.includes(k)) aus[k] = neu[k];
+      });
+      EIGENE.forEach((k) => {
+        if (this._cfg[k] !== undefined) aus[k] = this._cfg[k];
+      });
+      this._senden(aus);
+    }
+
+    _eigeneGeaendert(v) {
+      const c = { ...this._cfg };
+      const g = v.grenze === undefined || v.grenze === null || v.grenze === "" ? NaN : Number(v.grenze);
+      if (Number.isFinite(g)) c.grenze = g;
+      else delete c.grenze;
+      const hex = rgbZuHex(v.grenze_farbe);
+      if (hex && (c.grenze_farbe || hex !== ROT)) c.grenze_farbe = hex;
+      else if (!hex && !(c.grenze_farbe && !hexZuRgb(c.grenze_farbe))) delete c.grenze_farbe;
+      if (v.beschriftung === false) c.grenze_text = false;
+      else if (v.grenze_text) c.grenze_text = v.grenze_text;
+      else delete c.grenze_text;
+      // die eigenen Felder stehen am Ende
+      const aus = {};
+      Object.keys(c).forEach((k) => {
+        if (!EIGENE.includes(k)) aus[k] = c[k];
+      });
+      EIGENE.forEach((k) => {
+        if (c[k] !== undefined) aus[k] = c[k];
+      });
+      this._senden(aus);
+    }
+
+    _senden(c) {
+      this._cfg = c;
+      this._zeichnen();
+      this.dispatchEvent(new CustomEvent("config-changed", { detail: { config: c }, bubbles: true, composed: true }));
+    }
+  }
+
+  if (!customElements.get(EDITOR_TAG)) customElements.define(EDITOR_TAG, StatistikGrenzlinieCardEditor);
   customElements.define(TAG, StatistikGrenzlinieCard);
   window.customCards = window.customCards || [];
   window.customCards.push({
